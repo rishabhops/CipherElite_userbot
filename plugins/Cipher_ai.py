@@ -4,7 +4,7 @@
 #  and Free/Paid API Key Auto-Fallback
 #
 #  Plugin Name:    cipher_ai
-#  Author:         Rishabh Anand (@rishabhops)
+#  Author:         CipherElite Dev (@rishabhops)
 #  Repository:     https://github.com/rishabhops/CipherElite
 #
 #  LICENSE:        MIT
@@ -15,7 +15,7 @@
 #     bot no longer freezes while waiting on Gemini
 #   - Automatic model fallback chain + retry-with-backoff so FREE-tier keys
 #     that hit rate limits degrade gracefully instead of erroring out
-#   - Paid-tier users can pin a stronger model (e.g. gemini-2.5-pro) via
+#   - Paid-tier users can pin a stronger model (e.g. gemini-3.1-pro-preview) via
 #     .aimodel, while still falling back to free models if that model
 #     ever gets rate limited
 #   - New commands: .aimodel, .aitemp, .aistats, .aiimg (vision support)
@@ -24,7 +24,7 @@
 # =============================================================================
 
 VERSION = "2.0.0"
-CATEGORY = "cipher_ai"
+CATEGORY = "utilities"
 
 import asyncio
 import time
@@ -45,14 +45,20 @@ chat_settings = {}          # chat_id -> {"model": str, "temperature": float}
 ai_stats = {}                # chat_id -> {"queries": int, "errors": int, "rate_limited": int}
 
 # Models that reliably work on a FREE Gemini API key. Order = fallback order.
+# NOTE: Google retired the Gemini 2.x/2.5 lineup for new API keys in 2026 —
+# these must be the current Gemini 3.x model IDs, or every request 404s
+# regardless of quota. "gemini-flash-lite-latest" is a rolling alias that
+# always points at Google's current lite model, kept last as a safety net
+# against the *next* rename too.
 FREE_MODEL_CHAIN = [
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
     "gemini-flash-lite-latest",
 ]
 
 # Models a PAID/billing-enabled key can additionally use.
-PRO_MODELS = ["gemini-2.5-pro"]
+PRO_MODELS = ["gemini-3.1-pro-preview"]
 
 ALL_SELECTABLE_MODELS = PRO_MODELS + FREE_MODEL_CHAIN
 DEFAULT_MODEL = FREE_MODEL_CHAIN[0]
@@ -164,7 +170,7 @@ def init(client):
         if settings["pinned"]:
             return settings["model"]
         if response_type == "detailed":
-            return "gemini-2.5-flash"
+            return "gemini-3.7-flash"
         return "gemini-flash-lite-latest"
 
     def max_tokens_for_type(response_type):
@@ -250,6 +256,10 @@ def init(client):
                             await asyncio.sleep(3)  # brief backoff, then retry same model once
                             continue
                         break  # give up on this model, try next in chain
+                    elif "404" in err_text or "NOT_FOUND" in err_text or "no longer available" in err_text.lower():
+                        # This specific model was retired/renamed by Google — skip it
+                        # immediately and try the next one in the fallback chain.
+                        break
                     else:
                         # Non-rate-limit error (bad key, safety block, etc.) - stop immediately
                         return None, f"❌ **Error:** {err_text[:150]}"
@@ -469,7 +479,7 @@ def init(client):
             await event.reply(
                 f"{pin_note}\n\n"
                 f"**Available models:**\n{model_list}\n\n"
-                f"Usage: `.aimodel gemini-2.5-pro` — pin a model\n"
+                f"Usage: `.aimodel gemini-3.1-pro-preview` — pin a model\n"
                 f"`.aimodel auto` — go back to token-saving auto-routing\n\n"
                 f"ℹ️ Free API keys work fine with the flash/lite models. If a pinned model gets rate limited, "
                 f"Cipher AI automatically falls back to a free model so you still get an answer."
