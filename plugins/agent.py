@@ -46,7 +46,7 @@ from plugins.bot import add_handler
 MAX_AGENT_STEPS = 5
 CONFIRM_TIMEOUT_SECONDS = 120
 INTENT_TIMEOUT_SECONDS = 120
-AGENT_MODEL = "gemini-2.5-flash"
+AGENT_MODEL = "gemini-3.7-flash"  # Gemini 2.x/2.5 retired for new keys in 2026 — must use 3.x model IDs
 INTENT_MODEL = "gemini-flash-lite-latest"
 
 # action_id -> {"name": str, "args": dict, "chat_id": int, "expires": datetime, "description": str}
