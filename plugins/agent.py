@@ -400,74 +400,96 @@ def init(client):
     @CipherElite.on(events.NewMessage(pattern=r"\.agent(?:\s+(.*))?"))
     @rishabh()
     async def agent_handler(event):
-        task = event.pattern_match.group(1)
-        if not task:
-            await event.reply(
-                "🤖 **Cipher Agent**\n\n"
-                "Usage: `.agent <task>` — or just type `cipher <task>` naturally.\n\n"
-                "Examples:\n"
-                "`.agent find messages mentioning 'invoice' in this chat`\n"
-                "`cipher iss chat ke 10 recent messages padho aur summary do`\n\n"
-                "Main pehle bataunga ki maine kya samjha, phir puchunga \"Karu?\" — "
-                "tumhare haan/confirm ke baad hi kuch execute hoga. Risky actions "
-                "(dusri chat me message, group join/leave, delete/forward) ke liye ek "
-                "extra `.confirm <id>` bhi lagega."
-            )
-            return
-        await start_intent_flow(event, task)
+        try:
+            task = event.pattern_match.group(1)
+            if not task:
+                await event.reply(
+                    "🤖 **Cipher Agent**\n\n"
+                    "Usage: `.agent <task>` — or just type `cipher <task>` naturally.\n\n"
+                    "Examples:\n"
+                    "`.agent find messages mentioning 'invoice' in this chat`\n"
+                    "`cipher iss chat ke 10 recent messages padho aur summary do`\n\n"
+                    "Main pehle bataunga ki maine kya samjha, phir puchunga \"Karu?\" — "
+                    "tumhare haan/confirm ke baad hi kuch execute hoga. Risky actions "
+                    "(dusri chat me message, group join/leave, delete/forward) ke liye ek "
+                    "extra `.confirm <id>` bhi lagega."
+                )
+                return
+            await start_intent_flow(event, task)
+        except Exception as e:
+            print(f"❌ agent_handler error: {e}")
+            try:
+                await event.reply(f"❌ **Agent error:** {str(e)[:200]}")
+            except Exception:
+                pass
 
     @CipherElite.on(events.NewMessage(pattern=r"(?i)^cipher[,:]?\s+(.+)"))
     @rishabh()
     async def cipher_trigger_handler(event):
-        if event.chat_id in PENDING_INTENT:
-            return  # an intent is already pending here — let the reply-listener handle it
-        task = event.pattern_match.group(1)
-        await start_intent_flow(event, task)
+        try:
+            existing = PENDING_INTENT.get(event.chat_id)
+            if existing and datetime.now() <= existing["expires"]:
+                return  # a live prompt is already waiting on a reply — don't stack a second one
+            task = event.pattern_match.group(1)
+            await start_intent_flow(event, task)
+        except Exception as e:
+            print(f"❌ cipher_trigger_handler error: {e}")
+            try:
+                await event.reply(f"❌ **Agent error:** {str(e)[:200]}")
+            except Exception:
+                pass
 
     @CipherElite.on(events.NewMessage())
     @rishabh()
     async def intent_reply_handler(event):
         """Listens for the plain 'haan/nahi/kuch aur' reply to a pending 'Karu?' prompt."""
-        if event.id in BOT_SENT_IDS:
-            return
-        text = (event.raw_text or "").strip()
-        if not text or text.startswith("."):
-            return  # real commands are handled by their own dedicated handlers
+        try:
+            if event.id in BOT_SENT_IDS:
+                return
+            text = (event.raw_text or "").strip()
+            if not text or text.startswith("."):
+                return  # real commands are handled by their own dedicated handlers
 
-        chat_id = event.chat_id
-        pending = PENDING_INTENT.get(chat_id)
-        if not pending:
-            return
-        if datetime.now() > pending["expires"]:
-            del PENDING_INTENT[chat_id]
-            return
+            chat_id = event.chat_id
+            pending = PENDING_INTENT.get(chat_id)
+            if not pending:
+                return
+            if datetime.now() > pending["expires"]:
+                del PENDING_INTENT[chat_id]
+                return
 
-        verdict = _classify_reply(text)
+            verdict = _classify_reply(text)
 
-        if verdict == "yes":
-            del PENDING_INTENT[chat_id]
-            thinking = await _send_tracked(event, "🤖 **Agent working...**")
+            if verdict == "yes":
+                del PENDING_INTENT[chat_id]
+                thinking = await _send_tracked(event, "🤖 **Agent working...**")
+                try:
+                    result = await asyncio.wait_for(run_agent(event, pending["task"]), timeout=60.0)
+                except asyncio.TimeoutError:
+                    result = "⏰ **Timeout** — try a simpler task."
+                except Exception as e:
+                    result = f"❌ **Agent error:** {str(e)[:200]}"
+                await thinking.edit(result[:4000])
+                return
+
+            if verdict == "no":
+                del PENDING_INTENT[chat_id]
+                await _send_tracked(event, "Ok, cancel kar diya. 👍")
+                return
+
+            # Anything else = a clarification / correction — re-interpret and ask again
+            understood = await understand_intent(text)
+            PENDING_INTENT[chat_id] = {
+                "task": text,
+                "expires": datetime.now() + timedelta(seconds=INTENT_TIMEOUT_SECONDS),
+            }
+            await _send_tracked(event, f"Ok!\n\n{understood}\n\n**Karu?** (haan/nahi, ya bata do kya alag chahiye)")
+        except Exception as e:
+            print(f"❌ intent_reply_handler error: {e}")
             try:
-                result = await asyncio.wait_for(run_agent(event, pending["task"]), timeout=60.0)
-            except asyncio.TimeoutError:
-                result = "⏰ **Timeout** — try a simpler task."
-            except Exception as e:
-                result = f"❌ **Agent error:** {str(e)[:200]}"
-            await thinking.edit(result[:4000])
-            return
-
-        if verdict == "no":
-            del PENDING_INTENT[chat_id]
-            await _send_tracked(event, "Ok, cancel kar diya. 👍")
-            return
-
-        # Anything else = a clarification / correction — re-interpret and ask again
-        understood = await understand_intent(text)
-        PENDING_INTENT[chat_id] = {
-            "task": text,
-            "expires": datetime.now() + timedelta(seconds=INTENT_TIMEOUT_SECONDS),
-        }
-        await _send_tracked(event, f"Ok!\n\n{understood}\n\n**Karu?** (haan/nahi, ya bata do kya alag chahiye)")
+                await event.reply(f"❌ **Agent error:** {str(e)[:200]}")
+            except Exception:
+                pass
 
     @CipherElite.on(events.NewMessage(pattern=r"\.confirm(?:\s+(\S+))?$"))
     @rishabh()
